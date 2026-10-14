@@ -1,0 +1,8 @@
+# Menjamin `rustfmt` + `clippy` tersedia di mesin dev maupun runner CI.
+#
+# Berbeda dari `ducad-editor/rust-toolchain.toml`, mengganti channel di sini
+# TIDAK memicu kompilasi ulang OCCT — server tidak menyentuh kernel sama
+# sekali, jadi memaku versi eksak di sini murah bila suatu saat diinginkan.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

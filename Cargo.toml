@@ -1,0 +1,59 @@
+[package]
+name = "ducad-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Yulius Jayuda <yulius.jayuda@gmail.com>"]
+description = "Server otentikasi DUCAD (Google, GitHub, Sign in with Apple)"
+
+[[bin]]
+name = "ducad-server"
+path = "src/main.rs"
+
+# CATATAN: crate ini SENGAJA bukan member workspace `ducad-editor`. Aturan
+# keras di CLAUDE.md melarang axum/tokio/sqlx masuk graf dependensi editor,
+# dan `deny.toml` editor memeriksa lisensi seluruh graf itu. Cargo project
+# terpisah juga menjaga agar build server tidak pernah menyentuh fingerprint
+# build OCCT (rebuild 10-15 menit).
+[dependencies]
+# Framework web
+axum = "0.8"
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "set-header"] }
+
+# Runtime async
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+
+# Basis data - MySQL
+sqlx = { version = "0.9", features = [
+    "runtime-tokio",
+    "tls-native-tls",
+    "mysql",
+    "chrono",
+] }
+
+# Serialisasi
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# JWT: token akses DUCAD (HS256) dan client secret Apple (ES256)
+jsonwebtoken = "9"
+
+# Klien HTTP untuk pertukaran kode OAuth. rustls dipakai agar bagian ini tidak
+# menuntut OpenSSL; sqlx tetap native-tls seperti server lain di tim (libssl3
+# sudah ada di image runtime).
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Utilitas
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+# CSPRNG langsung, bukan `rand`: yang dibutuhkan hanya mengisi N byte acak
+# untuk state nonce dan refresh token. Sama dengan pilihan di sisi klien
+# (lihat ADR 0003 §5).
+getrandom = "0.3"
+hex = "0.4"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenv = "0.15"

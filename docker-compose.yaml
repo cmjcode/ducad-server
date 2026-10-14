@@ -1,0 +1,24 @@
+name: ducad-server-stack
+
+# MySQL dan reverse proxy ber-TLS diasumsikan sudah ada di luar stack ini:
+# arahkan DATABASE_URL ke MySQL Anda, dan arahkan proxy ke port yang
+# dipublikasikan container ini. ducad-server tidak meneminasi TLS sendiri,
+# sementara Sign in with Apple menolak Return URL non-HTTPS — jadi proxy itu
+# wajib ada di produksi.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ducad-server
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-8430}:8430"
+    environment:
+      - SERVER_PORT=8430
+    # Seluruh konfigurasi lain dibaca dari `.env` (lihat env.example).
+    # Tidak ada default kredensial di berkas ini: nilai contoh yang terbawa
+    # ke produksi adalah cara termudah menjalankan server dengan JWT_SECRET
+    # yang bisa ditebak siapa pun.
+    env_file:
+      - .env
