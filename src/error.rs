@@ -52,6 +52,10 @@ pub enum AppError {
     #[error("{0}")]
     QuotaExceeded(String),
 
+    /// Batas laju permintaan per IP terlampaui (429, `code: rate_limited`).
+    #[error("{0}")]
+    TooManyRequests(String),
+
     #[error("Galat internal server")]
     Internal(#[from] anyhow::Error),
 }
@@ -64,6 +68,7 @@ impl AppError {
             AppError::Conflict { .. } => Some("conflict"),
             AppError::PayloadTooLarge(_) => Some("file_too_large"),
             AppError::QuotaExceeded(_) => Some("quota_exceeded"),
+            AppError::TooManyRequests(_) => Some("rate_limited"),
             _ => None,
         }
     }
@@ -92,6 +97,7 @@ impl AppError {
             AppError::Conflict { message, .. } => (StatusCode::CONFLICT, message.clone()),
             AppError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
             AppError::QuotaExceeded(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+            AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
             AppError::Internal(e) => {
                 tracing::error!("galat internal: {e:#}");
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
@@ -181,5 +187,10 @@ mod tests {
         assert_eq!(s2, StatusCode::FORBIDDEN);
         assert_eq!(b2["code"], "quota_exceeded");
         assert_eq!(b2["error"], "penuh");
+
+        let (s3, b3) = AppError::TooManyRequests("tunggu".to_string()).status_and_body();
+        assert_eq!(s3, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(b3["code"], "rate_limited");
+        assert_eq!(b3["error"], "tunggu");
     }
 }

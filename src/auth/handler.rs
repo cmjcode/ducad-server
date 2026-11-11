@@ -34,6 +34,9 @@ pub async fn login(
     Query(query): Query<LoginQuery>,
 ) -> Result<Redirect> {
     let provider = parse_provider(&provider)?;
+    if let Some(ticket) = &query.ticket {
+        validate_ticket(ticket)?;
+    }
 
     // Konfigurasi yang belum lengkap harus muncul sebagai pesan jelas di UI
     // aplikasi, bukan sebagai login yang menggantung sampai timeout. Karena
@@ -204,13 +207,14 @@ async fn issue_token(
         app.config.jwt_access_expiry_minutes,
     )?;
     let refresh_token = jwt::generate_refresh_token()?;
+    let refresh_hash = jwt::hash_refresh_token(&refresh_token);
 
     sqlx::query(
         "INSERT INTO sessions (id, user_id, refresh_token, expires_at) VALUES (?, ?, ?, ?)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(&user.id)
-    .bind(&refresh_token)
+    .bind(&refresh_hash)
     .bind(Utc::now() + Duration::days(app.config.jwt_refresh_expiry_days))
     .execute(&app.db)
     .await?;
@@ -262,6 +266,8 @@ pub async fn poll_ticket(
     State(app): State<AppState>,
     Json(req): Json<PollTicketRequest>,
 ) -> Result<Json<ApiResponse<PollTicketResponse>>> {
+    validate_ticket(&req.ticket)?;
+
     let row: Option<(String, Option<String>)> = sqlx::query_as(
         "SELECT status, payload FROM auth_tickets WHERE ticket = ? AND expires_at > NOW()",
     )
@@ -312,9 +318,15 @@ pub async fn refresh(
     State(app): State<AppState>,
     Json(req): Json<RefreshRequest>,
 ) -> Result<Json<ApiResponse<TokenResponse>>> {
+    let incoming_hash = jwt::hash_refresh_token(&req.refresh_token);
+    // Mencocokkan hash SHA-256 (format baru) maupun nilai mentah warisan
+    // supaya sesi yang dibuat sebelum migrasi otomatis berputar menjadi hash
+    // pada pemakaian berikutnya tanpa memutus login pengguna.
     let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT id, user_id FROM sessions WHERE refresh_token = ? AND expires_at > NOW()",
+        "SELECT id, user_id FROM sessions
+         WHERE refresh_token IN (?, ?) AND expires_at > NOW()",
     )
+    .bind(&incoming_hash)
     .bind(&req.refresh_token)
     .fetch_optional(&app.db)
     .await?;
@@ -323,8 +335,9 @@ pub async fn refresh(
     let user = fetch_user(&app.db, &user_id).await?;
 
     let new_refresh = jwt::generate_refresh_token()?;
+    let new_refresh_hash = jwt::hash_refresh_token(&new_refresh);
     sqlx::query("UPDATE sessions SET refresh_token = ?, expires_at = ? WHERE id = ?")
-        .bind(&new_refresh)
+        .bind(&new_refresh_hash)
         .bind(Utc::now() + Duration::days(app.config.jwt_refresh_expiry_days))
         .bind(&session_id)
         .execute(&app.db)
@@ -354,7 +367,9 @@ pub async fn logout(
     State(app): State<AppState>,
     Json(req): Json<LogoutRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    sqlx::query("DELETE FROM sessions WHERE refresh_token = ?")
+    let incoming_hash = jwt::hash_refresh_token(&req.refresh_token);
+    sqlx::query("DELETE FROM sessions WHERE refresh_token IN (?, ?)")
+        .bind(&incoming_hash)
         .bind(&req.refresh_token)
         .execute(&app.db)
         .await?;
@@ -367,6 +382,17 @@ pub async fn logout(
 fn parse_provider(raw: &str) -> Result<Provider> {
     Provider::parse(raw)
         .ok_or_else(|| AppError::BadRequest(format!("Provider login tidak dikenal: {raw}")))
+}
+
+/// Memastikan `ticket` berasal dari CSPRNG klien (32–64 karakter hex ASCII,
+/// sesuai 128–256 bit entropi di kolom `VARCHAR(64)`) dan menolak string
+/// pendek atau sembarang.
+pub(crate) fn validate_ticket(raw: &str) -> Result<()> {
+    let valid = (32..=64).contains(&raw.len()) && raw.bytes().all(|b| b.is_ascii_hexdigit());
+    if !valid {
+        return Err(AppError::BadRequest("Format ticket tidak sah".to_string()));
+    }
+    Ok(())
 }
 
 /// Mengambil baris `state` sekaligus menghapusnya, sehingga satu callback
@@ -485,9 +511,15 @@ async fn upsert_user(
     identity: &ProviderIdentity,
     default_license_tier: &str,
 ) -> Result<User> {
+    let apple_refresh = if provider == Provider::Apple {
+        identity.refresh_token.as_deref()
+    } else {
+        None
+    };
+
     sqlx::query(
-        "INSERT INTO users (id, provider, provider_id, email, display_name, avatar_url, license_tier)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO users (id, provider, provider_id, email, display_name, avatar_url, apple_refresh_token, license_tier)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
              email = VALUES(email),
              display_name = COALESCE(VALUES(display_name), display_name),
@@ -496,6 +528,7 @@ async fn upsert_user(
                  avatar_url,
                  COALESCE(VALUES(avatar_url), avatar_url)
              ),
+             apple_refresh_token = COALESCE(VALUES(apple_refresh_token), apple_refresh_token),
              updated_at = CURRENT_TIMESTAMP",
     )
     .bind(uuid::Uuid::new_v4().to_string())
@@ -504,6 +537,7 @@ async fn upsert_user(
     .bind(&identity.email)
     .bind(&identity.display_name)
     .bind(&identity.avatar_url)
+    .bind(apple_refresh)
     .bind(default_license_tier)
     .execute(pool)
     .await?;
@@ -606,5 +640,17 @@ mod tests {
         };
         let response = render_callback_response(&row, &token_uji());
         assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[test]
+    fn validasi_ticket_menolak_format_sembarang() {
+        assert!(validate_ticket(&"a1".repeat(16)).is_ok(), "32 hex sah");
+        assert!(validate_ticket(&"0F".repeat(32)).is_ok(), "64 hex sah");
+        assert!(validate_ticket("").is_err());
+        assert!(validate_ticket("terlalu-pendek").is_err());
+        assert!(validate_ticket(&"a".repeat(31)).is_err());
+        assert!(validate_ticket(&"a".repeat(65)).is_err());
+        assert!(validate_ticket(&format!("{}zz", "a".repeat(30))).is_err());
+        assert!(validate_ticket("1234567890abcdef1234567890abcde/").is_err());
     }
 }

@@ -39,6 +39,28 @@ pub async fn delete_me(
     // alih-alih melaporkan sukses atas penghapusan yang tidak terjadi.
     let user = fetch_user(&app.db, &claims.sub).await?;
 
+    // Cabut refresh token Sign in with Apple bila akun ini login lewat Apple
+    // (App Store Review Guideline 5.1.1(v)). Kegagalan komunikasi hulu dicatat
+    // sebagai peringatan supaya pemilik akun tidak terhalang menghapus data
+    // pribadinya di server DUCAD.
+    let apple_row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT provider, apple_refresh_token FROM users WHERE id = ?")
+            .bind(&claims.sub)
+            .fetch_optional(&app.db)
+            .await?;
+
+    if let Some((provider, Some(apple_refresh))) = apple_row
+        && provider == "apple"
+        && !apple_refresh.trim().is_empty()
+        && let Err(e) =
+            crate::auth::providers::revoke_apple_token(&app.http, &app.config, &apple_refresh).await
+    {
+        tracing::warn!(
+            user_id = %claims.sub,
+            "pencabutan token Apple saat hapus akun gagal: {e}"
+        );
+    }
+
     let result = sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(&claims.sub)
         .execute(&app.db)

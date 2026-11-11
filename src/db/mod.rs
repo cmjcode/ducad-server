@@ -38,6 +38,24 @@ pub async fn run_migrations(pool: &MySqlPool) -> anyhow::Result<()> {
             })?;
     }
 
+    // Migrasi kolom tambahan pada basis data lama yang dibuat sebelum kolom
+    // `apple_refresh_token` ditambahkan ke `schema.sql`.
+    let has_apple_refresh: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'users'
+           AND COLUMN_NAME = 'apple_refresh_token'",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if has_apple_refresh.0 == 0 {
+        sqlx::query("ALTER TABLE users ADD COLUMN apple_refresh_token TEXT NULL AFTER avatar_url")
+            .execute(pool)
+            .await?;
+        tracing::info!("migrasi skema: kolom users.apple_refresh_token ditambahkan");
+    }
+
     tracing::info!("migrasi skema selesai");
     Ok(())
 }

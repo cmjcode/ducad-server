@@ -102,16 +102,23 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("ducad-server mendengarkan di http://{addr}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
 
 fn router(config: &Config) -> Router<AppState> {
-    Router::new()
-        .route("/health", get(health))
+    let auth_limiter = middleware::rate_limit::RateLimiter::new(30, Duration::from_secs(60));
+    // Klien memolling `/ticket/poll` setiap 1,5 detik (~40 req/menit), sehingga
+    // batasnya dipisah agar beberapa percobaan login wajar tidak tercekik.
+    let poll_limiter = middleware::rate_limit::RateLimiter::new(120, Duration::from_secs(60));
+
+    let auth_routes = Router::new()
         // Satu route untuk ketiga provider; segmen path-nya divalidasi di
         // handler (`Provider::parse`).
         .route("/api/v1/auth/login/{provider}", get(auth::handler::login))
@@ -121,9 +128,24 @@ fn router(config: &Config) -> Router<AppState> {
             "/api/v1/auth/callback/{provider}",
             get(auth::handler::callback_redirect).post(auth::handler::callback_apple),
         )
-        .route("/api/v1/auth/ticket/poll", post(auth::handler::poll_ticket))
         .route("/api/v1/auth/refresh", post(auth::handler::refresh))
         .route("/api/v1/auth/logout", post(auth::handler::logout))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_limiter,
+            middleware::rate_limit::enforce,
+        ));
+
+    let poll_route = Router::new()
+        .route("/api/v1/auth/ticket/poll", post(auth::handler::poll_ticket))
+        .layer(axum::middleware::from_fn_with_state(
+            poll_limiter,
+            middleware::rate_limit::enforce,
+        ));
+
+    Router::new()
+        .route("/health", get(health))
+        .merge(auth_routes)
+        .merge(poll_route)
         .route(
             "/api/v1/users/me",
             get(users::handler::get_me).delete(users::handler::delete_me),

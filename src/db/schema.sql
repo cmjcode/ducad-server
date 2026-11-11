@@ -20,8 +20,12 @@ CREATE TABLE IF NOT EXISTS users (
     -- akun GitHub dengan alamat yang sama bisa masuk ke akun Google
     -- seseorang. Konsekuensinya: login lewat dua provider = dua akun.
     email         VARCHAR(255) NOT NULL,
-    display_name  VARCHAR(255) NULL,
-    avatar_url    TEXT         NULL,
+    display_name        VARCHAR(255) NULL,
+    avatar_url          TEXT         NULL,
+    -- Refresh token dari Sign in with Apple; wajib dicabut lewat
+    -- `https://appleid.apple.com/auth/revoke` saat pemilik menghapus akunnya
+    -- (`DELETE /api/v1/users/me`, App Store Review Guideline 5.1.1(v)).
+    apple_refresh_token TEXT         NULL,
     -- 'Free' | 'Pro'. Ditampilkan klien sebagai "Ducad {license_tier} Tier"
     -- dan menentukan kuota sinkronisasi (nilai lain dihitung sebagai Free).
     -- Nilai untuk akun baru datang dari DEFAULT_LICENSE_TIER, bukan dari
@@ -45,7 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (
     id            VARCHAR(36)  NOT NULL PRIMARY KEY,
     user_id       VARCHAR(36)  NOT NULL,
-    refresh_token VARCHAR(128) NOT NULL UNIQUE,      -- 64 byte acak, hex
+    refresh_token VARCHAR(128) NOT NULL UNIQUE,      -- SHA-256 hex (64 karakter) dari 64 byte CSPRNG
     expires_at    DATETIME     NOT NULL,
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,

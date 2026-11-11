@@ -55,6 +55,9 @@ pub struct ProviderIdentity {
     pub email: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    /// Refresh token milik provider bila perlu dicabut saat penghapusan akun
+    /// (saat ini dipakai untuk Sign in with Apple).
+    pub refresh_token: Option<String>,
 }
 
 /// Memastikan provider punya kredensial sebelum pengguna dialihkan.
@@ -180,6 +183,7 @@ async fn exchange_google(
         email: info.email,
         display_name: info.name,
         avatar_url: info.picture,
+        refresh_token: None,
     })
 }
 
@@ -259,6 +263,7 @@ async fn exchange_github(
         email,
         display_name: user.name.or(Some(user.login)),
         avatar_url: user.avatar_url,
+        refresh_token: None,
     })
 }
 
@@ -285,6 +290,8 @@ fn pick_github_email(emails: Vec<GitHubEmail>) -> Option<String> {
 #[derive(Deserialize)]
 struct AppleToken {
     id_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 /// Bagian `id_token` Apple yang dipakai.
@@ -401,7 +408,43 @@ async fn exchange_apple(
         display_name: None,
         // Apple tidak menyediakan avatar.
         avatar_url: None,
+        refresh_token: token.refresh_token.filter(|t| !t.trim().is_empty()),
     })
+}
+
+/// Mencabut refresh token Sign in with Apple saat pemilik menghapus akunnya
+/// (`https://appleid.apple.com/auth/revoke`, App Store Review Guideline 5.1.1(v)).
+pub async fn revoke_apple_token(
+    http: &reqwest::Client,
+    config: &Config,
+    refresh_token: &str,
+) -> Result<()> {
+    let refresh_token = refresh_token.trim();
+    if refresh_token.is_empty() {
+        return Ok(());
+    }
+    let client_secret = apple_client_secret(config)?;
+    let resp = http
+        .post("https://appleid.apple.com/auth/revoke")
+        .form(&[
+            ("client_id", config.apple_client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("token", refresh_token),
+            ("token_type_hint", "refresh_token"),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::OAuth(format!("Pencabutan token Apple gagal dihubungi: {e}")))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::OAuth(format!(
+            "Apple menolak pencabutan token (HTTP {status}): {}",
+            body.trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Membaca nama dari field `user` pada callback Apple:

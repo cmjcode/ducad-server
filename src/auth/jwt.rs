@@ -3,6 +3,7 @@
 
 use chrono::Utc;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, Result};
 use crate::models::JwtClaims;
@@ -46,6 +47,16 @@ pub fn verify_access_token(token: &str, secret: &str) -> Result<JwtClaims> {
 /// (ADR 0003 §5).
 pub fn generate_refresh_token() -> Result<String> {
     Ok(hex::encode(random_bytes::<64>()?))
+}
+
+/// Hash satu arah (SHA-256 hex 64 karakter) dari refresh token untuk disimpan
+/// di kolom `sessions.refresh_token`. Token mentah memiliki entropi 512 bit
+/// dari CSPRNG, sehingga SHA-256 tanpa garam tetap tahan tebakan seandainya
+/// isi tabel `sessions` bocor.
+pub fn hash_refresh_token(raw: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Nonce `state` OAuth: 32 byte acak dalam 64 karakter hex, muat di kolom
@@ -107,5 +118,16 @@ mod tests {
         let state = generate_state_nonce().expect("CSPRNG tersedia di host tes");
         assert_eq!(state.len(), 64, "harus muat di kolom VARCHAR(64)");
         assert!(state.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_refresh_token_deterministik_dan_64_hex() {
+        let raw = generate_refresh_token().expect("CSPRNG tersedia di host tes");
+        let h1 = hash_refresh_token(&raw);
+        let h2 = hash_refresh_token(&raw);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+        assert_ne!(h1, raw);
+        assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
