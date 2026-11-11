@@ -2,7 +2,7 @@
 name = "ducad-server"
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 authors = ["Yulius Jayuda <yulius.jayuda@gmail.com>"]
 description = "Server otentikasi DUCAD (Google, GitHub, Sign in with Apple)"
 

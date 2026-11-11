@@ -215,3 +215,9 @@ akun berbeda, §7). Bila `set-tier` dengan email cocok ke >1 akun, perintah
 gagal dan mencetak id-nya; ulangi dengan `user_id` yang dimaksud. Menurunkan
 akun ke Free tidak menghapus berkas yang sudah melebihi kuota — unggahan
 berikutnya saja yang ditolak `quota_exceeded`.
+
+## 9. Lisensi & Keamanan Kredensial
+
+- **Lisensi**: `AGPL-3.0-only` (lihat [`LICENSE`](LICENSE)), seragam dengan `DUCAD-STUDIO`.
+- **Jangan pernah komit `.env` atau berkas kunci `.p8`**. Keduanya diabaikan lewat `.gitignore`.
+- **Rotasi Rahasia Historis**: Berkas `.env` dan `AuthKey_*.p8` sempat tercatat pada komit awal sebelum dihapus di `HEAD`. Sebelum atau saat mengoperasikan server produksi, pastikan seluruh rahasia lama (`DATABASE_URL` password, `JWT_SECRET`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_SECRET`, dan Apple Sign-in key `.p8`) telah dirotasi sesuai panduan di `DUCAD-STUDIO/docs/ROTASI_KREDENSIAL_DAN_RIWAYAT_GIT.md`.
