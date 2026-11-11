@@ -170,6 +170,96 @@ impl PollTicketResponse {
     }
 }
 
+// ─── Sinkronisasi ───────────────────────────────────────────────────────────
+
+/// Metadata satu berkas awan, bentuk `CloudFile` di kontrak sinkronisasi.
+/// Tidak pernah memuat isi berkas: daftar dan balasan unggah hanya membawa
+/// metadata, isi diambil lewat endpoint unduh.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudFile {
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+    pub sha256: String,
+    pub revision: i64,
+    /// RFC3339 UTC, mis. `2026-10-20T10:00:00Z`.
+    pub updated_at: String,
+}
+
+/// Baris `cloud_files` TANPA kolom `data` — SELECT daftar sengaja tidak
+/// menyentuh blob supaya daftar berkas tidak membaca megabyte dari disk.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CloudFileRow {
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+    pub sha256: String,
+    pub revision: i64,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+impl From<CloudFileRow> for CloudFile {
+    fn from(r: CloudFileRow) -> Self {
+        CloudFile {
+            id: r.id,
+            name: r.name,
+            size: r.size,
+            sha256: r.sha256,
+            revision: r.revision,
+            updated_at: rfc3339_utc(r.updated_at),
+        }
+    }
+}
+
+/// Kolom DATETIME dibaca sebagai UTC: sqlx menyetel `time_zone='+00:00'`
+/// pada setiap koneksi, jadi `CURRENT_TIMESTAMP` tersimpan dalam UTC.
+pub fn rfc3339_utc(t: chrono::NaiveDateTime) -> String {
+    t.and_utc()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Balasan `GET /api/v1/sync/files`.
+#[derive(Debug, Serialize)]
+pub struct SyncListResponse {
+    pub files: Vec<CloudFile>,
+    pub used_bytes: u64,
+    pub quota_bytes: u64,
+    pub max_file_bytes: u64,
+    pub max_files: u64,
+    pub tier: String,
+}
+
+/// Query `PUT /api/v1/sync/files`. Semua opsional di tingkat serde supaya
+/// parameter yang hilang dijawab dengan pesan JSON yang jelas dari handler.
+#[derive(Debug, Deserialize)]
+pub struct UploadQuery {
+    pub name: Option<String>,
+    pub base_revision: Option<i64>,
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeletedResponse {
+    pub deleted: bool,
+}
+
+/// Body `PUT /api/v1/sync/prefs`. `prefs` dibiarkan `Value` supaya handler
+/// bisa menolak selain objek dengan pesan sendiri.
+#[derive(Debug, Deserialize)]
+pub struct PutPrefsRequest {
+    #[serde(default)]
+    pub prefs: serde_json::Value,
+}
+
+/// Balasan GET/PUT `/api/v1/sync/prefs`. `prefs` dan `updated_at` sengaja
+/// diserialisasi sebagai `null` (bukan dihilangkan) saat belum ada.
+#[derive(Debug, Serialize)]
+pub struct PrefsResponse {
+    pub prefs: Option<serde_json::Value>,
+    pub revision: i64,
+    pub updated_at: Option<String>,
+}
+
 // ─── Pembungkus respons ─────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

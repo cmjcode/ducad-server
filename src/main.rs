@@ -1,8 +1,11 @@
 //! `ducad-server` — server otentikasi untuk aplikasi DUCAD.
 //!
-//! Server ini hanya mengurus identitas: login Google/GitHub/Apple, sesi, dan
-//! profil akun. Tidak ada sinkronisasi dokumen — berkas `.ducad` tetap di
-//! perangkat pengguna.
+//! Server ini mengurus identitas (login Google/GitHub/Apple, sesi, profil
+//! akun), tier lisensi Free/Pro, dan sinkronisasi MANUAL berkas `.ducad`
+//! serta preferensi antar perangkat (`/api/v1/sync/*`). Berkas disimpan
+//! sebagai blob di MySQL yang sama; kuota per tier ditegakkan di server.
+//! Tier Pro diberikan manual lewat subcommand admin (`set-tier`), belum ada
+//! pembayaran.
 //!
 //! Instance ini memakai kredensial OAuth milik DUCAD sendiri, sehingga layar
 //! consent yang dilihat pengguna menyebut DUCAD. Lihat `README.md` untuk
@@ -13,12 +16,15 @@
 //! reverse proxy (nginx/Caddy) yang memegang sertifikat — Sign in with Apple
 //! menolak Return URL non-HTTPS, jadi proxy itu bukan opsional di produksi.
 
+mod admin;
 mod auth;
 mod config;
 mod db;
 mod error;
 mod middleware;
 mod models;
+mod sync;
+mod tier;
 mod users;
 
 use std::net::SocketAddr;
@@ -26,8 +32,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::http::{HeaderValue, Method, header};
 use axum::extract::DefaultBodyLimit;
+use axum::http::{HeaderValue, Method, header};
 use axum::routing::{get, post, put};
 use tower_http::cors::CorsLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -56,6 +62,22 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "ducad_server=info,tower_http=info".into()),
         )
         .init();
+
+    // Subcommand admin: terhubung ke DB, migrasi, bertindak, keluar — tanpa
+    // HTTP dan tanpa butuh JWT_SECRET/kredensial provider.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match admin::parse_args(&args) {
+        Ok(None) => {}
+        Ok(Some(command)) => {
+            let pool = db::create_pool(&Config::database_url_from_env()?).await?;
+            db::run_migrations(&pool).await?;
+            return admin::run(&pool, command).await;
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    }
 
     let config = Arc::new(Config::from_env()?);
 
@@ -115,6 +137,24 @@ fn router(config: &Config) -> Router<AppState> {
             )),
         )
         .route("/api/v1/users/{id}/avatar", get(users::handler::get_avatar))
+        // Batas body PUT berkas di atas `max_file_bytes` (lihat
+        // `SyncLimits::body_limit`) supaya berkas yang sedikit kebesaran
+        // dijawab handler dengan `code: file_too_large`.
+        .route(
+            "/api/v1/sync/files",
+            get(sync::handler::list_files).merge(
+                put(sync::handler::upload_file)
+                    .layer(DefaultBodyLimit::max(config.sync.body_limit())),
+            ),
+        )
+        .route(
+            "/api/v1/sync/files/{id}",
+            get(sync::handler::download_file).delete(sync::handler::delete_file),
+        )
+        .route(
+            "/api/v1/sync/prefs",
+            get(sync::handler::get_prefs).put(sync::handler::put_prefs),
+        )
         .layer(cors_layer(config))
         .layer(hsts_layer())
         .layer(TraceLayer::new_for_http())
@@ -145,8 +185,19 @@ fn cors_layer(config: &Config) -> CorsLayer {
 
     CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .expose_headers([
+            header::HeaderName::from_static("x-ducad-name"),
+            header::HeaderName::from_static("x-ducad-revision"),
+            header::HeaderName::from_static("x-ducad-sha256"),
+        ])
         .allow_credentials(false)
 }
 

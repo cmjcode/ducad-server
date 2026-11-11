@@ -169,8 +169,14 @@ mod tests {
     #[test]
     fn sniff_accepts_png_and_jpeg_only() {
         assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\nrest"), Some("image/png"));
-        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0]), Some("image/jpeg"));
-        assert_eq!(sniff_image(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), None);
+        assert_eq!(
+            sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            sniff_image(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+            None
+        );
         assert_eq!(sniff_image(b"GIF89a"), None);
         assert_eq!(sniff_image(b""), None);
     }

@@ -109,12 +109,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skema_terpecah_menjadi_lima_pernyataan() {
+    fn skema_terpecah_menjadi_tujuh_pernyataan() {
         let statements = split_statements(SCHEMA);
         assert_eq!(
             statements.len(),
-            5,
-            "schema.sql harus menghasilkan tepat 5 CREATE TABLE, dapat: {}",
+            7,
+            "schema.sql harus menghasilkan tepat 7 CREATE TABLE, dapat: {}",
             statements.len()
         );
         for s in &statements {
@@ -127,7 +127,15 @@ mod tests {
 
     #[test]
     fn skema_memuat_tabel_yang_dibutuhkan() {
-        for tabel in ["users", "sessions", "oauth_states", "auth_tickets", "user_avatars"] {
+        for tabel in [
+            "users",
+            "sessions",
+            "oauth_states",
+            "auth_tickets",
+            "user_avatars",
+            "cloud_files",
+            "user_prefs",
+        ] {
             assert!(
                 SCHEMA.contains(&format!("CREATE TABLE IF NOT EXISTS {tabel}")),
                 "tabel {tabel} tidak ada di skema"

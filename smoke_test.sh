@@ -7,7 +7,7 @@
 #   ./smoke_test.sh https://api.ducad.app  # server lain
 #
 # Yang diperiksa hanyalah perilaku yang tidak butuh akun: health, penolakan
-# tanpa token, penanganan provider tak dikenal, dan apakah ketiga provider
+# tanpa token (termasuk endpoint sinkronisasi), penanganan provider tak dikenal, dan apakah ketiga provider
 # sudah dikonfigurasi. Alur login penuh butuh interaksi browser sungguhan —
 # itu ada di `ducad-editor/docs/CEKLIS_UJI_GUI.md`.
 #
@@ -84,6 +84,20 @@ if [[ "$KODE" == "401" ]]; then
 else
     gagal "GET /users/me dengan token palsu → $KODE (harusnya 401)"
 fi
+
+# Endpoint sinkronisasi: tanpa token → 401 (sebelum menyentuh data apa pun).
+for target in "GET /api/v1/sync/files" "PUT /api/v1/sync/files?name=uji.ducad&base_revision=0" \
+              "GET /api/v1/sync/prefs" "DELETE /api/v1/sync/files/tidak-ada"; do
+    metode="${target%% *}"
+    jalur="${target#* }"
+    KODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -X "$metode" --data-binary 'x' "$BASE_URL$jalur" 2>/dev/null)
+    if [[ "$KODE" == "401" ]]; then
+        lulus "$metode ${jalur%%\?*} tanpa token → 401"
+    else
+        gagal "$metode ${jalur%%\?*} tanpa token → $KODE (harusnya 401)"
+    fi
+done
 
 # ─── 4. Provider tak dikenal ──────────────────────────────────────────────────
 KODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \

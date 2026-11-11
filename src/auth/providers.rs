@@ -459,7 +459,8 @@ mod tests {
             apple_private_key: String::new(),
             apple_redirect_uri: "https://api.ducad.app/api/v1/auth/callback/apple".to_string(),
             allowed_origins: vec!["https://ducad.app".to_string()],
-            default_license_tier: "Pro".to_string(),
+            default_license_tier: "Free".to_string(),
+            sync: crate::tier::SyncLimits::default(),
         }
     }
 

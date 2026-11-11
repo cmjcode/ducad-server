@@ -1,15 +1,19 @@
 # ducad-server
 
-Server otentikasi DUCAD: login Google, GitHub, dan Sign in with Apple, lalu
+Server akun DUCAD: login Google, GitHub, dan Sign in with Apple, lalu
 menerbitkan JWT DUCAD. Aplikasi DUCAD tidak pernah mengurus OAuth sendiri —
 ia membuka browser ke server ini dan menjemput tokennya lewat ticket polling.
+Selain identitas, server menyimpan tier lisensi (Free/Pro) dan menjadi tempat
+sinkronisasi manual berkas `.ducad` + preferensi antar Mac/iPad/Linux/Windows.
 
 Keputusan di balik bentuknya ada di
 [`ducad-editor/docs/adr/0003-identitas-auth-ducad.md`](../ducad-editor/docs/adr/0003-identitas-auth-ducad.md).
 
-**Yang TIDAK ada di sini**: sinkronisasi dokumen, tim, kolaborasi, enkripsi
-vault. Berkas `.ducad` tetap di perangkat pengguna. Empat tabel di
-[`src/db/schema.sql`](src/db/schema.sql) adalah seluruh keadaan yang disimpan.
+**Yang TIDAK ada di sini**: sinkronisasi otomatis/real-time, tim,
+kolaborasi, enkripsi vault, pembayaran. Sinkronisasi bersifat manual (klien
+memutuskan kapan unggah/unduh) dengan deteksi konflik lewat `revision`. Tujuh
+tabel di [`src/db/schema.sql`](src/db/schema.sql) adalah seluruh keadaan yang
+disimpan — isi berkas berupa blob di MySQL yang sama.
 
 ---
 
@@ -64,11 +68,27 @@ cargo test
 | POST | `/api/v1/auth/refresh` | — | Body `{"refresh_token":"…"}`; token diputar setiap pakai |
 | POST | `/api/v1/auth/logout` | — | Body `{"refresh_token":"…"}` |
 | GET | `/api/v1/users/me` | Bearer | Profil pemanggil |
-| DELETE | `/api/v1/users/me` | Bearer | Hapus akun (App Store Guideline 5.1.1(v)) |
+| DELETE | `/api/v1/users/me` | Bearer | Hapus akun (App Store Guideline 5.1.1(v)); berkas awan & prefs ikut terhapus (cascade) |
+| PUT | `/api/v1/users/me/avatar` | Bearer | Body PNG/JPEG mentah, maks 1 MB |
+| GET | `/api/v1/users/{id}/avatar` | — | Foto profil unggahan |
+| GET | `/api/v1/sync/files` | Bearer | Daftar metadata berkas + `used_bytes`, `quota_bytes`, `max_file_bytes`, `max_files`, `tier` |
+| GET | `/api/v1/sync/files/{id}` | Bearer | Isi berkas mentah; header `X-Ducad-Name` (percent-encoded), `X-Ducad-Revision`, `X-Ducad-Sha256` |
+| PUT | `/api/v1/sync/files?name=…&base_revision=n[&force=true]` | Bearer | Body = isi `.ducad`; upsert per nama. 409 `conflict`, 413 `file_too_large`, 403 `quota_exceeded` |
+| DELETE | `/api/v1/sync/files/{id}` | Bearer | `{"deleted":true}` |
+| GET | `/api/v1/sync/prefs` | Bearer | `{"prefs":…\|null,"revision":n,"updated_at":…\|null}` |
+| PUT | `/api/v1/sync/prefs` | Bearer | Body `{"prefs":{…}}`, maks 64 KB, last-write-wins |
 
 Balasan poll: `{"success":true,"data":{"status":"pending"}}`, atau `status`
 `completed` (+`token`), atau `error` (+`error`). Teks `error` ditampilkan apa
 adanya di UI aplikasi, jadi ia ditulis dalam bahasa Indonesia.
+
+Galat sinkronisasi yang perlu dibedakan klien membawa field `code` mesin
+selain teks `error`: `conflict` (409, plus `current`: CloudFile atau `null`),
+`file_too_large` (413), `quota_exceeded` (403). Aturan revisi unggahan:
+`base_revision=0` = berkas belum boleh ada, `n>0` = revisi server harus `n`,
+`force=true` = timpa. Kuota dihitung dengan mengganti ukuran berkas lama bila
+menimpa. Berkas yang jauh melebihi `SYNC_MAX_FILE_MB` (+64 KB) ditolak axum
+dengan 413 tanpa body JSON.
 
 ## 4. Variabel environment
 
@@ -77,6 +97,26 @@ Panduan langkah-demi-langkah mendapatkan kredensial (Client ID, Secret, Key ID, 
 
 Yang wajib: `DATABASE_URL` dan `JWT_SECRET` — tanpa keduanya proses menolak
 start.
+
+Tier dan kuota:
+
+| Env | Default | Arti |
+|---|---|---|
+| `DEFAULT_LICENSE_TIER` | `Free` | Tier akun BARU (`Free`/`Pro`, tidak peka huruf; nilai lain = gagal start) |
+| `SYNC_QUOTA_FREE_MB` | 50 | Total byte semua berkas akun Free |
+| `SYNC_QUOTA_PRO_MB` | 5120 | Total byte akun Pro |
+| `SYNC_MAX_FILE_MB` | 32 | Batas satu berkas, semua tier |
+| `SYNC_MAX_FILES_FREE` | 20 | Jumlah berkas maksimum akun Free |
+| `SYNC_MAX_FILES_PRO` | 2000 | Jumlah berkas maksimum akun Pro |
+
+**Akun lama tetap pada tiernya.** Default `DEFAULT_LICENSE_TIER` berubah dari
+`Pro` ke `Free`, tapi baris `users` yang sudah ada tidak dimigrasi — akun yang
+dibuat saat default masih `Pro` tetap Pro sampai diturunkan manual (§8).
+Tier yang tidak dikenal di basis data dihitung sebagai Free untuk kuota.
+
+`SYNC_MAX_FILE_MB` juga menentukan batas body PUT berkas; bila dinaikkan,
+naikkan pula `client_max_body_size` di reverse proxy dan `max_allowed_packet`
+MySQL (default MySQL 8: 64 MB).
 
 Provider yang kredensialnya belum diisi tidak mematikan server: permintaan
 login ke provider itu dijawab galat yang menyebut env var yang kurang, dan
@@ -154,3 +194,24 @@ sertifikat `api.ducad.app`, dan arahkan ke port yang dipublikasikan container.
   orang lain. Lihat `auth::success_page::escape_for_script`.
 - **`refresh_token` diputar setiap dipakai**, jadi token yang bocor hanya bisa
   dipakai sekali.
+
+## 8. Perintah admin
+
+Tier Pro diberikan manual (belum ada pembayaran). Biner yang sama punya dua
+subcommand yang memakai `DATABASE_URL` yang sama, menjalankan migrasi, lalu
+keluar — tanpa menyalakan HTTP dan tanpa butuh `JWT_SECRET`:
+
+```bash
+ducad-server list-users                      # semua akun + jumlah/byte berkas awan
+ducad-server list-users --email a@contoh.id  # akun dengan email itu
+ducad-server set-tier <user_id|email> Pro    # atau Free; tidak peka huruf
+```
+
+Di container: `docker compose exec <service> ducad-server list-users`. Lokal:
+`cargo run -- set-tier a@contoh.id pro`.
+
+Satu email bisa dimiliki lebih dari satu akun (login lewat provider berbeda =
+akun berbeda, §7). Bila `set-tier` dengan email cocok ke >1 akun, perintah
+gagal dan mencetak id-nya; ulangi dengan `user_id` yang dimaksud. Menurunkan
+akun ke Free tidak menghapus berkas yang sudah melebihi kuota — unggahan
+berikutnya saja yang ditolak `quota_exceeded`.

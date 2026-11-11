@@ -52,6 +52,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # (lihat ADR 0003 §5).
 getrandom = "0.3"
 hex = "0.4"
+# Checksum isi berkas sinkronisasi (`X-Ducad-Sha256`, kolom `sha256`).
+sha2 = "0.10"
+# Nama berkas UTF-8 di header `X-Ducad-Name`.
+percent-encoding = "2"
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"

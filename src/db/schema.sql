@@ -1,9 +1,10 @@
 -- Skema MySQL ducad-server.
 --
--- Hanya lima tabel: server ini mengurus identitas saja. Tidak ada tabel
--- sinkronisasi dokumen/part — berkas `.ducad` masih sepenuhnya lokal, dan
--- menambahkannya nanti harus lewat migrasi tersendiri, bukan menyisipkan
--- kolom ke tabel di bawah.
+-- Tujuh tabel: lima untuk identitas (users, sessions, oauth_states,
+-- auth_tickets, user_avatars) dan dua untuk sinkronisasi manual antar
+-- perangkat (cloud_files, user_prefs). Tabel sinkronisasi sengaja berdiri
+-- sendiri dan hanya menunjuk ke users lewat foreign key, bukan menyisipkan
+-- kolom ke tabel identitas.
 --
 -- Seluruh pernyataan idempotent dan dijalankan otomatis saat proses start
 -- (`db::run_migrations`). Pemisahnya adalah `;`, jadi jangan pakai `;`
@@ -21,10 +22,14 @@ CREATE TABLE IF NOT EXISTS users (
     email         VARCHAR(255) NOT NULL,
     display_name  VARCHAR(255) NULL,
     avatar_url    TEXT         NULL,
-    -- Ditampilkan klien sebagai "Ducad {license_tier} Tier". Nilai untuk
-    -- akun baru datang dari DEFAULT_LICENSE_TIER, bukan dari default kolom
-    -- ini; default di sini hanya jaring pengaman untuk INSERT manual.
-    license_tier  VARCHAR(20)  NOT NULL DEFAULT 'Pro',
+    -- 'Free' | 'Pro'. Ditampilkan klien sebagai "Ducad {license_tier} Tier"
+    -- dan menentukan kuota sinkronisasi (nilai lain dihitung sebagai Free).
+    -- Nilai untuk akun baru datang dari DEFAULT_LICENSE_TIER, bukan dari
+    -- default kolom ini - default di sini hanya jaring pengaman untuk INSERT
+    -- manual. Basis data lama tetap memakai DEFAULT 'Pro' karena CREATE
+    -- TABLE IF NOT EXISTS tidak mengubah tabel yang sudah ada, dan itu tidak
+    -- apa-apa karena server selalu mengisi kolom ini secara eksplisit.
+    license_tier  VARCHAR(20)  NOT NULL DEFAULT 'Free',
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_users_provider (provider, provider_id),
@@ -88,5 +93,49 @@ CREATE TABLE IF NOT EXISTS user_avatars (
     content_type VARCHAR(32) NOT NULL,                -- 'image/png' | 'image/jpeg'
     data         MEDIUMBLOB  NOT NULL,
     updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Berkas `.ducad` yang disinkronkan pengguna. Isi disimpan sebagai blob di
+-- MySQL yang sama: volume yang diharapkan kecil (kuota Free 50 MB) dan satu
+-- tempat penyimpanan berarti satu cadangan dan satu transaksi untuk revisi
+-- dan isi sekaligus. LONGBLOB karena batas per berkas (SYNC_MAX_FILE_MB,
+-- default 32 MB) melewati 16 MB milik MEDIUMBLOB - pastikan
+-- max_allowed_packet server MySQL lebih besar dari batas itu.
+--
+-- `revision` mulai 1 dan naik 1 di setiap unggahan sukses. Klien mengirim
+-- revisi terakhir yang ia lihat, sehingga unggahan dari perangkat yang
+-- ketinggalan ditolak 409 alih-alih menimpa hasil kerja perangkat lain.
+--
+-- UNIQUE (user_id, name) memakai collation tabel (utf8mb4_unicode_ci), jadi
+-- nama tidak peka huruf besar-kecil. Disengaja: "Bracket.ducad" dan
+-- "bracket.ducad" akan bertabrakan di sistem berkas macOS/Windows.
+--
+-- Daftar berkas TIDAK pernah membaca kolom `data`, hanya metadata.
+CREATE TABLE IF NOT EXISTS cloud_files (
+    id         VARCHAR(36)  NOT NULL PRIMARY KEY,
+    user_id    VARCHAR(36)  NOT NULL,
+    name       VARCHAR(255) NOT NULL,
+    size       BIGINT       NOT NULL,
+    sha256     CHAR(64)     NOT NULL,                -- hex huruf kecil
+    revision   INT          NOT NULL DEFAULT 1,
+    data       LONGBLOB     NOT NULL,
+    created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uq_cloud_files_user_name (user_id, name),
+    INDEX idx_cloud_files_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Preferensi aplikasi yang ikut berpindah perangkat. Satu baris per
+-- pengguna, last-write-wins (preferensi tidak sebernilai berkas desain,
+-- jadi konfliknya tidak ditanyakan ke pengguna). MEDIUMTEXT berisi JSON,
+-- bukan tipe JSON MySQL: isinya hanya disimpan dan dikembalikan utuh, tidak
+-- pernah dikueri per field. Handler membatasinya 64 KB.
+CREATE TABLE IF NOT EXISTS user_prefs (
+    user_id    VARCHAR(36) NOT NULL PRIMARY KEY,
+    prefs      MEDIUMTEXT  NOT NULL,
+    revision   INT         NOT NULL DEFAULT 1,
+    updated_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
